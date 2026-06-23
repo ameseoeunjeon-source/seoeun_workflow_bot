@@ -23,6 +23,14 @@ _SYSTEM = (
 )
 
 
+def _clear_webhook():
+    """웹훅이 걸려 있으면 getUpdates가 막히므로 매번 해제(메시지 수신 보장)."""
+    try:
+        requests.post(f"{API}/deleteWebhook", timeout=15)
+    except Exception as e:  # noqa
+        print(f"[explainer] deleteWebhook 실패(무시): {e}")
+
+
 def _get_updates(offset=None):
     params = {"timeout": 0}
     if offset is not None:
@@ -115,6 +123,7 @@ def run_once():
     if not config.BOT_TOKEN:
         print("[explainer] BOT_TOKEN 없음")
         return
+    _clear_webhook()
     updates = _get_updates().get("result", [])
     if not updates:
         print("[explainer] 새 메시지 없음")
