@@ -5,6 +5,7 @@
 - 파일(docx/pdf/txt)도 받아 텍스트 추출 후 설명.
 """
 import io
+import re
 import requests
 
 import config
@@ -15,12 +16,37 @@ API = f"https://api.telegram.org/bot{config.BOT_TOKEN}"
 _SYSTEM = (
     "너는 '" + config.MY_NAME + "'의 똑똑한 업무 비서다. 사용자가 회의록·업무 메시지·자료를 "
     "보내며 설명을 요청하면, 쉽고 명확하게 풀어준다. "
-    "다음을 포함해 정리하라: (1) 한 줄 핵심, (2) 무슨 회의/내용인지 맥락, "
-    "(3) 결정사항·합의된 것, (4) 액션아이템(누가 무엇을 언제), "
-    "(5) 어려운 용어·약어 풀이. "
+    "다음 순서로 정리하라:\n"
+    "■ 한 줄 핵심\n"
+    "■ 무슨 회의/내용인지 (맥락)\n"
+    "■ 결정·합의된 것\n"
+    "■ 할 일 (누가 / 무엇 / 언제)\n"
+    "■ 어려운 용어·약어 풀이\n"
     "모르는 약어는 '아마 ~인 듯' 으로 추정 표시. 사실과 추측을 섞지 말 것. "
-    "사용자가 일반 질문을 하면 비서답게 간결·정확하게 답하라. 한국어로."
+    "사용자가 일반 질문을 하면 비서답게 간결·정확하게 답하라. 한국어로.\n"
+    "중요: 텔레그램에 보내는 거라 마크다운 기호를 절대 쓰지 마라. "
+    "**굵게**, ##제목, `코드`, * 같은 기호 금지. 강조가 필요하면 기호 없이 문장으로. "
+    "구분은 위처럼 ■ 또는 · 같은 글머리만 사용."
 )
+
+# 업무 다이제스트를 요청하는 말로 인식할 키워드
+_DIGEST_TRIGGERS = ("다이제스트", "업무 정리", "업무정리", "업무 요약", "업무요약",
+                    "할 일 정리", "오늘 업무", "방 요약", "업무 알려", "업무 뭐")
+
+
+def _clean_md(t):
+    """텔레그램 일반텍스트용: 마크다운 기호 제거(특히 ** 깨짐 방지)."""
+    if not t:
+        return t
+    t = t.replace("**", "").replace("__", "").replace("`", "")
+    t = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", t)      # ## 헤더 → 일반텍스트
+    t = re.sub(r"(?m)^\s*[-*]\s+", "· ", t)           # - / * 글머리 → ·
+    return t.strip()
+
+
+def _is_digest_request(text):
+    low = text.replace(" ", "")
+    return any(k.replace(" ", "") in low for k in _DIGEST_TRIGGERS)
 
 
 def _clear_webhook():
@@ -87,6 +113,21 @@ def _extract_text(content, path):
     return ""
 
 
+def _run_digest(reply_to):
+    """봇에 '다이제스트 해줘' 요청 시: 지금 방들 긁어서 업무 정리해 답장."""
+    import collector
+    import extractor
+    import formatter
+    _send("🗂️ 업무방 확인 중… 잠시만요(1~2분).", reply_to=reply_to)
+    try:
+        rooms, unmatched = collector.collect()
+        result = extractor.extract(rooms, ignore_state=True)  # 중복방지 무시, 현재 전부
+        text = formatter.format_digest(result, unmatched)
+    except Exception as e:  # noqa
+        text = f"업무 다이제스트 생성 중 오류: {e}"
+    _send(_clean_md(text))
+
+
 def _handle(msg):
     chat = msg.get("chat", {})
     if str(chat.get("id")) != str(config.CHAT_ID):
@@ -95,6 +136,13 @@ def _handle(msg):
     text = (msg.get("text") or msg.get("caption") or "").strip()
 
     doc = msg.get("document")
+
+    # 1) '다이제스트 해줘' 같은 요청 → 방 업무 정리 (파일 없을 때)
+    if text and not doc and _is_digest_request(text):
+        _run_digest(mid)
+        return
+
+    # 2) 회의록/질문 설명
     file_text = ""
     if doc:
         content, path = _download_file(doc.get("file_id"))
@@ -115,7 +163,7 @@ def _handle(msg):
         return
 
     answer = llm.chat(_SYSTEM, user, max_tokens=2000, temperature=0.3)
-    _send(answer or "죄송해요, 답을 생성하지 못했어요. 다시 한 번 보내주세요.", reply_to=mid)
+    _send(_clean_md(answer) or "죄송해요, 답을 생성하지 못했어요. 다시 한 번 보내주세요.", reply_to=mid)
 
 
 def run_once():

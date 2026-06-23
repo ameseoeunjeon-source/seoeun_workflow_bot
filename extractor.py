@@ -70,10 +70,11 @@ def _item_hash(room, task):
     return hashlib.sha1(f"{room}|{task}".encode("utf-8")).hexdigest()[:16]
 
 
-def extract(rooms):
+def extract(rooms, ignore_state=False):
     """
     반환: {"rooms":[{"room","items":[...]}], "has_new": bool}
-    DIGEST_MODE=new 면 이미 보고한 업무는 빠진다.
+    - 스케줄 실행: DIGEST_MODE=new 면 이미 보고한 업무는 빠진다.
+    - ignore_state=True (봇에 '다이제스트 해줘' 요청 시): 중복방지 무시하고 현재 업무 전부 표시.
     """
     if not rooms or not llm.available():
         return {"rooms": [], "has_new": False}
@@ -98,13 +99,14 @@ def extract(rooms):
             task = str(it.get("task", "")).strip()
             if not task:
                 continue
-            h = _item_hash(room, task)
-            is_new = h not in state
-            if config.DIGEST_MODE == "new" and not is_new:
-                continue  # 이미 보고한 업무 스킵
-            if is_new:
-                state[h] = now
-                has_new = True
+            if not ignore_state:
+                h = _item_hash(room, task)
+                is_new = h not in state
+                if config.DIGEST_MODE == "new" and not is_new:
+                    continue  # 이미 보고한 업무 스킵
+                if is_new:
+                    state[h] = now
+                    has_new = True
             items.append({
                 "task": task,
                 "from": str(it.get("from", "")).strip(),
@@ -116,5 +118,6 @@ def extract(rooms):
             items.sort(key=lambda x: not x["for_me"])
             out_rooms.append({"room": room, "items": items})
 
-    _save_state(state)
-    return {"rooms": out_rooms, "has_new": has_new}
+    if not ignore_state:
+        _save_state(state)
+    return {"rooms": out_rooms, "has_new": has_new or (ignore_state and bool(out_rooms))}
