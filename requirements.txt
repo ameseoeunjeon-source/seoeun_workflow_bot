@@ -1,0 +1,6 @@
+telethon
+python-dotenv
+requests
+google-genai
+python-docx
+pypdf
